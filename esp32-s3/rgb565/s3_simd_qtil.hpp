@@ -3,60 +3,169 @@
  * Copyright 2026, <https://github.com/BitsForPeople>
  */
 #include <cstdint>
+#include <type_traits>
 #include <array>
 
 
 namespace simd {
-    struct QRs;
 
-    struct QR_t {
-        const unsigned n;
+    template<unsigned I>
+    requires (I < 8)
+    struct QReg;
 
-        constexpr auto operator <=>(const QR_t& other) const {
-            return this->n <=> other.n;
+    namespace {
+        template<unsigned X>
+        constexpr bool check_qr(const QReg<X>&) {
+            return true;
         }
 
-        constexpr auto operator <=>(const int i) const {
-            return this->n <=> (unsigned)i;
+        template<unsigned X>
+        constexpr unsigned qr_num(const QReg<X>&) {
+            return X;
         }
-
-        constexpr operator unsigned(void) const {
-            return n;
-        }
-
-        private:
-        friend struct QRs;
-        constexpr QR_t(const unsigned n) : n {n} {
-
-        }
-    };
-
-    struct QRs {
-        static constexpr std::array<QR_t,8> q = {
-            0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u
-        };
-    };
-
-    static constexpr const QR_t& Q0 = QRs::q[0];
-    static constexpr const QR_t& Q1 = QRs::q[1];
-    static constexpr const QR_t& Q2 = QRs::q[2];
-    static constexpr const QR_t& Q3 = QRs::q[3];
-    static constexpr const QR_t& Q4 = QRs::q[4];
-    static constexpr const QR_t& Q5 = QRs::q[5];
-    static constexpr const QR_t& Q6 = QRs::q[6];
-    static constexpr const QR_t& Q7 = QRs::q[7];
-
-
-    template<QR_t... Qs>
-    inline constexpr bool noneOf(const QR_t& q) {
-        return ((q != Qs) && ...);
     }
 
-    template<QR_t... Qs>
-    inline constexpr bool anyOf(const QR_t& q) {
-        return ((q == Qs) || ...);
-    }
 
+    template<typename T>
+    concept QR_t = requires (const T& x) {{qr_num(x)};};
+
+    template<unsigned I>
+    requires (I < 8)
+    struct QReg {
+        static constexpr unsigned N = I;
+
+        constexpr QReg(void) = default;
+        template<unsigned J>
+        inline const QReg& operator =(const QReg<J>&) const {
+            if constexpr (J != N) {
+                asm volatile (
+                    "MV.QR q%[d], q%[s]" "\n"
+                    :
+                    : 
+                        [s] "n" (J),
+                        [d] "n" (N)
+                );
+            }
+            return *this;
+        }
+
+        constexpr unsigned num(void) const {
+            return N;
+        }
+
+        template<unsigned J>
+        constexpr std::strong_ordering operator <=>(const QReg<J>&) const {
+            return N <=> J;
+        }
+
+        template<QR_t Q1>
+        static constexpr bool sameAs = (N == Q1::N);
+
+        template<QR_t Q1, QR_t ... Qs>
+        static constexpr bool anyOf = (sameAs<Q1> || (sameAs<Qs> || ...));
+
+        template<QR_t Q1, QR_t ... Qs>
+        static constexpr bool noneOf = !anyOf<Q1,Qs...>;
+    };
+
+
+    template<typename Q, typename Q1, typename ... Qs>
+    concept qr_anyOf = QR_t<Q> && Q::template anyOf<Q1,Qs...>;
+
+    template<typename Q, typename Q1>
+    concept qr_sameAs = QR_t<Q> && Q::template sameAs<Q1>;
+
+    template<typename Q, typename Q1, typename ... Qs>
+    concept qr_noneOf = QR_t<Q> && QR_t<Q1> && (QR_t<Qs>&&...) && !qr_anyOf<Q,Q1,Qs...>;
+
+    template<typename Q, unsigned X>
+    concept qr_below = QR_t<Q> && Q::N < X;
+
+    template<typename Q, unsigned X>
+    concept qr_above = QR_t<Q> && Q::N > X;
+
+    template<typename Q, unsigned L, unsigned H>
+    concept qr_in_range = QR_t<Q> && (Q::N >= L) && (Q::N <= H);
+
+
+    using Q0 = QReg<0>;
+    using Q1 = QReg<1>;
+    using Q2 = QReg<2>;
+    using Q3 = QReg<3>;
+    using Q4 = QReg<4>;
+    using Q5 = QReg<5>;
+    using Q6 = QReg<6>;
+    using Q7 = QReg<7>;
+
+    constexpr Q0 q0 {};
+    constexpr Q1 q1 {};
+    constexpr Q2 q2 {};
+    constexpr Q3 q3 {};
+    constexpr Q4 q4 {};
+    constexpr Q5 q5 {};
+    constexpr Q6 q6 {};
+    constexpr Q7 q7 {};
+
+
+
+    template<typename T>
+    requires ((16 % sizeof(T)) == 0)
+    struct Vec {
+        using type = std::remove_cv_t<T>;
+
+        static constexpr std::size_t ELEM_SZ = sizeof(type);
+        static constexpr std::size_t SIZE = 16/ELEM_SZ;
+
+        alignas(16) std::array<type, SIZE> data;
+
+        constexpr Vec(void) {
+            if(std::is_constant_evaluated()) {
+                data = decltype(data) {};
+            }
+        }
+
+        template<typename U>
+        constexpr Vec(const Vec<U>& other) {
+            this->operator =(other);
+        }
+
+        template<typename U>
+        constexpr Vec& operator =(const Vec<U>& other) {
+            if(std::is_constant_evaluated()) {
+                this->data = other.data;
+            } else {
+                asm (
+                    "LD.QR q0, %[src], 0" "\n"
+                    "ST.QR q0, %[dst], 0" "\n"
+                    : 
+                        "=m" (this->data)
+                    :
+                        "m" (other.data),
+                        [src] "r" (&other.data),
+                        [dst] "r" (&this->data)
+                );
+            }
+        }
+
+        constexpr T& operator [](const unsigned i) {
+            return this->data[i];
+        }
+
+        constexpr const T& operator [](const unsigned i) const {
+            return this->data[i];
+        }
+        
+        template<typename U>
+        Vec<U>& as(void) {
+            return reinterpret_cast<Vec<U>&>(*this);
+        }
+
+        template<typename U>
+        const Vec<U>& as(void) const {
+            return reinterpret_cast<const Vec<U>&>(*this);
+        }
+
+    };
 
     /**
      * @brief Utility routines for working with the PIE's Q registers
@@ -123,16 +232,37 @@ namespace simd {
 
         template<simd::QR_t D, simd::QR_t S>
         inline void mv(Dep& dep) {
-            if constexpr (D != S) {
+            if constexpr (D::N != S::N) {
                 asm (
                     "MV.QR q%[d], q%[s]"
                     :
                         "+m" (dep)
                     :
-                        [d] "n" (D.n),
-                        [s] "n" (S.n)
+                        [d] "n" (D::N),
+                        [s] "n" (S::N)
                 );
             }
+        }
+
+        template<simd::QR_t QL, simd::QR_t QH, unsigned WIDTH = 8>
+        requires (QL::N != QH::N && (WIDTH == 8 || WIDTH == 16 || WIDTH == 32))
+        inline void swap(Dep& dep) {
+            asm (
+                "EE.VUNZIP.%[w] q%[ql], q%[qh]" "\n"
+                "EE.VZIP.%[w] q%[qh], q%[ql]"
+                :
+                    "+m" (dep)
+                :
+                    [ql] "n" (QL::N),
+                    [qh] "n" (QH::N),
+                    [w] "n" (WIDTH)
+            );
+        }
+
+        template<simd::QR_t QL, simd::QR_t QH>
+        requires (QL::N != QH::N)
+        inline void swap8(Dep& dep) {
+            swap<QL,QH,8>(dep);
         }
 
         template<simd::QR_t Q, unsigned W>
@@ -141,22 +271,87 @@ namespace simd {
             uint32_t data;
             asm (
                 "EE.MOVI.32.A q%[qr], %[data], %[w]" "\n"
-                : [data] "=r" (data)
-                : [qr] "n" (Q.n),
-                "m" (dep),
-                [w] "n" (W)
+                :
+                    [data] "=r" (data)
+                :
+                    [qr] "n" (Q::N),
+                    "m" (dep),
+                    [w] "n" (W)
             );
             return data;
         }
+
+
+        template<typename T>
+        concept ldable_t = (sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4) && alignof(T) == sizeof(T);
+
+        template<simd::QR_t Q, ldable_t T>
+        inline void ldbc(const auto& src, Dep& dep) {
+            asm (
+                "EE.VLDBC.%[w] q%[qr], %[src]"
+                :
+                    "+m" (dep)
+                :
+                    [qr] "n" (Q::N),
+                    [w] "n" (sizeof(T)*8),
+                    [src] "r" (&src),
+                    "m" (*(const T*)&src)
+            );
+        }
+
+        template<simd::QR_t Q, ldable_t T, unsigned INC, typename S>
+        requires ((INC % sizeof(T)) == 0)
+        inline void ldbcip(S*& src, Dep& dep) {
+            asm (
+                "EE.VLDBC.%[w].IP q%[qr], %[src], %[inc]"
+                :
+                    "+m" (dep),
+                    [src] "+r" (src)
+                :
+                    [qr] "n" (Q::N),
+                    [w] "n" (sizeof(T)*8),
+                    "m" (*(const T*)src),
+                    [inc] "n" (INC)
+            );
+        }
+
+        template<simd::QR_t Q, unsigned OFF = 0>
+        requires ((OFF % 16) == 0)
+        inline void stqr(void* const dst, Dep& dep) {
+            asm (
+                "ST.QR q%[qr], %[dst], %[off]"
+                :
+                    "=m" (*(uint8_t(*)[16])dst)
+                :
+                    "m" (dep),
+                    [qr] "n" (Q::N),
+                    [dst] "r" (dst),
+                    [off] "n" (OFF)
+            );
+        }
+
+        template<simd::QR_t Q>
+        inline void zero(Dep& dep) {
+            asm (
+                "EE.ZERO.Q q%[qr]"
+                :
+                    "+m" (dep)
+                :
+                    [qr] "n" (Q::N)
+            );
+        }
+
 
         template<simd::QR_t Q>
         inline void rotrq(const uint32_t bytes, Dep& dep) {
             asm (
                 "WUR.SAR_BYTE %[s]" "\n"
                 "EE.SRC.Q q%[qr], q%[qr], q%[qr]"
-                : "+m" (dep)
-                : [s] "r" (bytes),
-                [qr] "n" (Q.n)
+                :
+                    "+m" (dep)
+                :
+                    [s] "r" (bytes),
+                    [qr] "n" (Q::N)
             );
         }
 
@@ -166,20 +361,24 @@ namespace simd {
             if(known(((uintptr_t)dst % 16) == 0)) { // This check isn't worth doing at runtime.
                 asm (
                     "EE.VST.128.IP q%[qr], %[dst], 16" "\n"
-                    : [dst] "+r" (dst),
-                    "=m" (*(uint8_t(*)[16])dst)
-                    : [qr] "n" (Q.n),
-                    "m" (dep)
+                    :
+                        [dst] "+r" (dst),
+                        "=m" (*(uint8_t(*)[16])dst)
+                    :
+                        [qr] "n" (Q::N),
+                        "m" (dep)
                 );
             } else
             if((uintptr_t)dst % 8 == 0) {
                 asm (
                     "EE.VST.L.64.IP q%[qr], %[dst], 8" "\n"
                     "EE.VST.H.64.IP q%[qr], %[dst], 8" "\n"
-                    : [dst] "+r" (dst),
-                    "=m" (*(uint8_t(*)[16])dst)
-                    : [qr] "n" (Q.n),
-                    "m" (dep)
+                    :
+                        [dst] "+r" (dst),
+                        "=m" (*(uint8_t(*)[16])dst)
+                    :
+                        [qr] "n" (Q::N),
+                        "m" (dep)
                 );
             } else {
                 uint32_t* const d32 = (uint32_t*)dst;
@@ -227,18 +426,20 @@ namespace simd {
 
 
         template<simd::QR_t QL, simd::QR_t QH>
-        requires (QL.n <= 5 && QH.n <= 5) // q6+q7 used as temporaries, clobbered
+        requires (simd::qr_in_range<QL,0,5> && simd::qr_in_range<QH,0,5>) // q6+q7 used as temporaries, clobbered
         inline void* store2Q(void* dst, Dep& dep) {
 
             if(known(((uintptr_t)dst % 16) == 0)) { 
                 asm (
                     "EE.VST.128.IP q%[ql], %[dst], 16" "\n"
                     "EE.VST.128.IP q%[qh], %[dst], 16" "\n"
-                    : [dst] "+r" (dst),
+                    : 
+                        [dst] "+r" (dst),
                         "=m" (*(uint8_t(*)[32])dst)
-                    : "m" (dep),
-                        [ql] "n" (QL.n),
-                        [qh] "n" (QH.n)
+                    : 
+                        "m" (dep),
+                        [ql] "n" (QL::N),
+                        [qh] "n" (QH::N)
                 );
             } else
             if(((uintptr_t)dst % 8) == 0) {
@@ -247,11 +448,13 @@ namespace simd {
                     "EE.VST.H.64.IP q%[ql], %[dst], 8" "\n"
                     "EE.VST.L.64.IP q%[qh], %[dst], 8" "\n"
                     "EE.VST.H.64.IP q%[qh], %[dst], 8" "\n"
-                    : [dst] "+r" (dst),
-                    "=m" (*(uint8_t(*)[32])dst)
-                    : [ql] "n" (QL.n),
-                    [qh] "n" (QH.n),
-                    "m" (dep)
+                    :
+                        [dst] "+r" (dst),
+                        "=m" (*(uint8_t(*)[32])dst)
+                    :
+                        [ql] "n" (QL::N),
+                        [qh] "n" (QH::N),
+                        "m" (dep)
                 );
             } else {
                 const uint32_t off = 16- ((uintptr_t)dst % 16);
@@ -272,8 +475,9 @@ namespace simd {
                         [dst] "+r" (dst),
                         "=m" (*(uint8_t(*)[32])dst),
                         "+m" (dep)
-                    :   [ql] "n" (QL.n),
-                        [qh] "n" (QH.n),
+                    :   
+                        [ql] "n" (QL::N),
+                        [qh] "n" (QH::N),
                         [off] "r" (off)
                 );
 

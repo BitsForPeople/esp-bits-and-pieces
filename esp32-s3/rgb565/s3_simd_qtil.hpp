@@ -89,39 +89,6 @@ namespace simd {
     template<typename Q, unsigned L, unsigned H>
     concept qr_in_range = QR_t<Q> && (Q::N >= L) && (Q::N <= H);
 
-    // template<QR_t ... Qs>
-    // struct QRSet {
-
-    //     static constexpr unsigned SIZE = sizeof...(Qs);
-    //     static constexpr bool EMPTY = SIZE == 0;
-
-    //     template<QR_t Q>
-    //     static constexpr bool contains = !EMPTY && ((Q::N == Qs::N) || ...);
-
-    //     template<QR_t Q>
-    //     using add = std::conditional_t<contains<Q>, QRSet<Qs...>, QRSet<Q,Qs...>>;
-
-    //     template<QR_t Q, QR_t ... Qrest>
-    //     using addAll = std::conditional_t<
-    //             (sizeof...(Qrest) == 0),
-    //                 add<Q>,
-    //                 add<Q>::addAll<Qrest...>
-    //             >;
-    // };
-
-    // namespace {
-    //     template<QR_t ... Qs>
-    //     static bool check_qrset(const QRSet<Qs...>&);
-    // }
-
-    // template<typename S>
-    // concept qr_set_t = requires {{check_qrset(std::declval<S>())};};
-
-    // template<typename Q, typename S>
-    // concept qr_in = QR_t<Q> && qr_set_t<S> && (S::template contains<Q>);
-
-    // template<typename Q, typename S>
-    // concept qr_not_in = QR_t<Q> && qr_set_t<S> && (!S::template contains<Q>);
 
     using Q0 = QReg<0>;
     using Q1 = QReg<1>;

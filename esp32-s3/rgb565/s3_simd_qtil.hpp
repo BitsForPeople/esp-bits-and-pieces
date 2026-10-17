@@ -15,9 +15,10 @@ namespace simd {
 
     namespace {
         template<unsigned X>
-        constexpr bool check_qr(const QReg<X>&) {
-            return true;
-        }
+        static QReg<X> qr_type_check_(const QReg<X>&);
+
+        template<typename T>
+        using qr_type_ = decltype(qr_type_check_(std::declval<T>()));
 
         template<unsigned X>
         constexpr unsigned qr_num(const QReg<X>&) {
@@ -27,7 +28,8 @@ namespace simd {
 
 
     template<typename T>
-    concept QR_t = requires (const T& x) {{qr_num(x)};};
+    concept QR_t = std::is_same_v< std::remove_const_t<T>, qr_type_<T> >;
+
 
     template<unsigned I>
     requires (I < 8)
@@ -87,6 +89,39 @@ namespace simd {
     template<typename Q, unsigned L, unsigned H>
     concept qr_in_range = QR_t<Q> && (Q::N >= L) && (Q::N <= H);
 
+    // template<QR_t ... Qs>
+    // struct QRSet {
+
+    //     static constexpr unsigned SIZE = sizeof...(Qs);
+    //     static constexpr bool EMPTY = SIZE == 0;
+
+    //     template<QR_t Q>
+    //     static constexpr bool contains = !EMPTY && ((Q::N == Qs::N) || ...);
+
+    //     template<QR_t Q>
+    //     using add = std::conditional_t<contains<Q>, QRSet<Qs...>, QRSet<Q,Qs...>>;
+
+    //     template<QR_t Q, QR_t ... Qrest>
+    //     using addAll = std::conditional_t<
+    //             (sizeof...(Qrest) == 0),
+    //                 add<Q>,
+    //                 add<Q>::addAll<Qrest...>
+    //             >;
+    // };
+
+    // namespace {
+    //     template<QR_t ... Qs>
+    //     static bool check_qrset(const QRSet<Qs...>&);
+    // }
+
+    // template<typename S>
+    // concept qr_set_t = requires {{check_qrset(std::declval<S>())};};
+
+    // template<typename Q, typename S>
+    // concept qr_in = QR_t<Q> && qr_set_t<S> && (S::template contains<Q>);
+
+    // template<typename Q, typename S>
+    // concept qr_not_in = QR_t<Q> && qr_set_t<S> && (!S::template contains<Q>);
 
     using Q0 = QReg<0>;
     using Q1 = QReg<1>;
@@ -315,8 +350,8 @@ namespace simd {
             );
         }
 
-        template<simd::QR_t Q, unsigned OFF = 0>
-        requires ((OFF % 16) == 0)
+        template<simd::QR_t Q, int OFF = 0>
+        requires ((-128 <= OFF && OFF <= 112) && (OFF % 16) == 0)
         inline void stqr(void* const dst, Dep& dep) {
             asm (
                 "ST.QR q%[qr], %[dst], %[off]"
@@ -330,6 +365,37 @@ namespace simd {
             );
         }
 
+        template<simd::QR_t Q, int OFF = 0>
+        requires ((-128 <= OFF && OFF <= 112) && (OFF % 16) == 0)
+        inline void ldqr(const void* const src, Dep& dep) {
+            asm (
+                "LD.QR q%[qr], %[src], %[off]"
+                :
+                    "+m" (dep)
+                :
+                    "m" (*(const uint8_t(*)[16])src),
+                    [qr] "n" (Q::N),
+                    [src] "r" (src),
+                    [off] "n" (OFF)
+            );
+        }
+
+        namespace {
+            template<int OFF, simd::QR_t Qa, simd::QR_t... Qz>
+            inline void ldqr_(const void* const src, Dep& dep) {
+                ldqr<Qa,OFF>(src,dep);
+                if constexpr (sizeof...(Qz) != 0) {
+                    ldqr_<OFF+16,Qz...>(src,dep);
+                }
+            }
+        }
+
+        template<simd::QR_t Qa, simd::QR_t Qb, simd::QR_t... Qz>
+        inline void ldqr(const void* const src, Dep& dep) {
+            ldqr_<0,Qa,Qb,Qz...>(src,dep);
+        }
+
+
         template<simd::QR_t Q>
         inline void zero(Dep& dep) {
             asm (
@@ -340,6 +406,130 @@ namespace simd {
                     [qr] "n" (Q::N)
             );
         }
+
+
+
+        template<simd::QR_t Q, int INC = 16>
+        requires ((INC%16) == 0)
+        inline void vldip(auto*& src, Dep& dep) {
+            asm (
+                "EE.VLD.128.IP q%[qr], %[src], %[inc]" "\n"
+                :
+                    [src] "+r" (src),
+                    "+m" (dep)
+                : 
+                    "m" (*(const uint8_t(*)[16])src),
+                    [qr] "n" (Q::N),
+                    [inc] "n" (INC)
+            );
+        }
+
+        template<simd::QR_t Qa, simd::QR_t Qb, simd::QR_t ... Qz>
+        inline void vldip(auto*& src, Dep& dep) {
+            constexpr int INC = 16;
+            vldip<Qa,INC>(src,dep);
+            vldip<Qb,INC>(src,dep);
+            if constexpr (sizeof...(Qz) != 0) {
+                vldip<Qz...>(src,dep);
+            }
+        }
+
+        template<simd::QR_t Q>
+        inline void vldip(auto*& src, const int inc, Dep& dep) {
+            if(__builtin_constant_p(inc)
+                && ((inc % 16) == 0)
+                && (-2048 <= inc)
+                && (inc <= 2032)) {
+                asm (
+                    "EE.VLD.128.IP q%[qr], %[src], %[inc]" "\n"
+                    :
+                        [src] "+r" (src),
+                        "+m" (dep)
+                    : 
+                        "m" (*(const uint8_t(*)[16])src),
+                        [qr] "n" (Q::N),
+                        [inc] "n" (inc)
+                );
+            } else {
+                asm (
+                    "EE.VLD.128.XP q%[qr], %[src], %[inc]" "\n"
+                    :
+                        [src] "+r" (src),
+                        "+m" (dep)
+                    : 
+                        "m" (*(const uint8_t(*)[16])src),
+                        [qr] "n" (Q::N),
+                        [inc] "r" (inc)
+                );
+            }
+        }
+
+        template<simd::QR_t Q>
+        inline void vldxp(auto*& src, const int inc, Dep& dep) {
+            vldip<Q>(src,inc,dep);
+        }
+
+
+        template<simd::QR_t Q, signed INC = 16>
+        requires ((INC%16) == 0)
+        inline void vldip_usar(auto*& src, Dep& dep) {
+            asm (
+                "EE.LD.128.USAR.IP q%[qr], %[src], %[inc]" "\n"
+                :
+                    [src] "+r" (src),
+                    "+m" (dep)
+                : 
+                    "m" (*(const uint8_t(*)[16])src),
+                    [inc] "n" (INC),
+                    [qr] "n" (Q::N)
+            );
+        }
+
+        template<simd::QR_t Qa, simd::QR_t Qb, simd::QR_t ... Qz>
+        inline void vldip_usar(auto*& src, Dep& dep) {
+            vldip<Qa,16>(src,dep);
+            if constexpr (sizeof...(Qz) != 0) {
+                vldip_usar<Qb,Qz...>(src,dep);
+            } else {
+                vldip_usar<Qb,16>(src,dep);
+            }
+        }
+            
+
+        // template<simd::QR_t Q, simd::QR_t... Qs>
+        // inline void ld_unal(auto*& src, Dep& dep) {
+        //         if(known(((uintptr_t)src % 16) == 0)) {
+        //             asm (
+        //                 "LD.QR q%[ql], %[src], 16" "\n"
+        //                 :
+        //                     "+m" (dep)
+        //                 :
+        //                     [src] "r" (src),
+        //                     "m" (*(const uint16_t(*)[16])src),
+        //                     [qr] "n" (Q::N),
+        //                     [qh] "n" (QH::N)
+        //             );
+        //         } else {
+        //             const uint16_t* s = src;
+        //             asm (
+        //                 "EE.LD.128.USAR.IP q%[ql], %[s], 16" "\n"
+        //                 "EE.VLD.128.IP     q%[qh], %[s], 16" "\n"
+        //                 "EE.VLD.128.IP    q%[tmp], %[s], -32" "\n"
+
+        //                 "EE.SRC.Q q%[ql], q%[ql], q%[qh]" "\n"
+        //                 "EE.SRC.Q q%[qh], q%[qh], q%[tmp]" "\n"
+        //                 :
+        //                     [s] "+r" (s),
+        //                     "+m" (dep)
+        //                 :
+        //                     "m" (*(const uint16_t(*)[16])src),
+        //                     [ql] "n" (QL::N),
+        //                     [qh] "n" (QH::N),
+        //                     [tmp] "n" (Qtmp::N)
+        //             );
+        //             [[assume(s == src)]];
+        //         }
+        // }
 
 
         template<simd::QR_t Q>

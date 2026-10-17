@@ -311,7 +311,6 @@ namespace rgb565 {
 
         }
 
-
         template<unsigned FB>
         static inline void scale_rnd(RGBVec& dst, const RGBVec& src, const FixedP<FB>& scale) {
             simd::qtil::Dep dep;
@@ -331,7 +330,7 @@ namespace rgb565 {
 
                 "EE.VLD.128.IP q1, %[s], -32" "\n" // q1 <- b
 
-                "EE.SRCMB.S8.QACC q2, %[fracBits], 0" "\n" // q2[n] <- QACC[n] >> fracBits
+                "EE.SRCMB.S8.QACC q2, %[fracBits], 0" "\n" // q2 <- r'
 
                 // QACC[n] <- 0.5 + (g[n]*scale)
                 "EE.MOV.U8.QACC q%[half]" "\n" // QACC[n] <- 0.5
@@ -339,7 +338,7 @@ namespace rgb565 {
 
                 "ST.QR q2, %[dst], 0" "\n" // r <- q2
 
-                "EE.SRCMB.S8.QACC q2, %[fracBits], 0" "\n" // q2[n] <- QACC[n] >> fracBits
+                "EE.SRCMB.S8.QACC q2, %[fracBits], 0" "\n" // q2 <- g'
 
                 // QACC[n] <- 0.5 + (b[n]*scale)
                 "EE.MOV.U8.QACC q%[half]" "\n" // QACC[n] <- 0.5
@@ -347,7 +346,7 @@ namespace rgb565 {
 
                 "ST.QR q2, %[dst], 16" "\n" // g <- q2
 
-                "EE.SRCMB.S8.QACC q2, %[fracBits], 0" "\n" // q2[n] <- QACC[n] >> fracBits
+                "EE.SRCMB.S8.QACC q2, %[fracBits], 0" "\n" // q2 <- b'
 
                 "ST.QR q2, %[dst], 32" "\n" // b <- q2
                 :
@@ -382,118 +381,85 @@ namespace rgb565 {
             return *this;
         }
 
-        static inline void add(RGBVec& dst, const RGBVec& src) {
-            const auto* s = &src.rgb;
-            auto* d = &dst.rgb;
+        static inline void add(RGBVec& dst, const RGBVec& src1, const RGBVec& src2) {
+            simd::qtil::Dep dep {};
+
+            simd::qtil::ldqr<simd::Q1>(&src1.rgb,dep); // q1 <- r
+            simd::qtil::ldqr<simd::Q2>(&src2.rgb,dep); // q2 <- r
+
             asm (
-                "EE.VLD.128.IP q0, %[src], 16" "\n"
-                "EE.VLD.128.IP q1, %[src], 16" "\n"
-
-                "LD.QR q2, %[dst], 0" "\n"
-                "LD.QR q3, %[dst], 16" "\n"
-
-                "EE.VADDS.S8.LD.INCP q0, %[src], q5, q0, q2" "\n"
-
-                "LD.QR q2, %[dst], 32" "\n"
-
-                // dst == 0
-                "EE.VADDS.S8.ST.INCP q5, %[dst], q5, q1, q3" "\n"
-                // dst == 16
-                "EE.VADDS.S8.ST.INCP q5, %[dst], q5, q0, q2" "\n"
-                // dst == 32
-                "ST.QR q5, %[dst], 0" "\n"
+                "EE.VADDS.S8 q0, q1, q2" "\n"
                 
+                "LD.QR q1, %[src1], 16" "\n" // q1 <- g
+                "LD.QR q2, %[src2], 16" "\n" // q2 <- g
+
+                "ST.QR q0, %[dst], 0" "\n" // r <- q0
+
+                "EE.VADDS.S8 q0, q1, q2" "\n"
+
+                "LD.QR q1, %[src1], 32" "\n" // q1 <- b
+                "LD.QR q2, %[src2], 32" "\n" // q2 <- b
+
+                "ST.QR q0, %[dst], 16" "\n" // g <- q0
+
+                "EE.VADDS.S8 q0, q1, q2" "\n"
+
+                "ST.QR q0, %[dst], 32" "\n" // b <- q0
                 :
-                    "+m" (dst.rgb),
-                    [src] "+&r" (s),
-                    [dst] "+&r" (d)
+                    "=m" (dst.rgb),
+                    "+m" (dep)
                 :
-                    "m" (src.rgb)
+                    "m" (src1.rgb),
+                    "m" (src2.rgb),
+                    [src1] "r" (&src1.rgb),
+                    [src2] "r" (&src2.rgb),
+                    [dst] "r" (&dst.rgb)
             );
         }
 
-        static inline void add_clamp(RGBVec& dst, const RGBVec& src) {
+        static inline void add_clamp(RGBVec& dst, const RGBVec& src1, const RGBVec& src2) {
             simd::qtil::Dep dep {};
+
+            simd::qtil::ldqr<simd::Q1>(&src1.rgb,dep); // q1 <- r
+            simd::qtil::ldqr<simd::Q2>(&src2.rgb,dep); // q2 <- r
 
             loadMasks<simd::Q6,simd::Q7>(dep);
 
             asm (
-                "LD.QR q0, %[src], 0" "\n" // q0 <- r
-                "LD.QR q2, %[dst], 0" "\n" // q2 <- r
-
-                "LD.QR q1, %[src], 16" "\n" // q1 <- g
-                "LD.QR q3, %[dst], 16" "\n" // q3 <- g
-
-                "EE.VADDS.S8 q5, q0, q2" "\n" // q5 <- r'
-
-                "LD.QR q0, %[src], 32" "\n" // q0 <- b
-                "LD.QR q2, %[dst], 32" "\n" // q2 <- b
-
-                "EE.VMIN.S8 q5, q5, q6" "\n"
-                "ST.QR q5, %[dst], 0" "\n" // r <- q5
-
-                "EE.VADDS.S8 q5, q1, q3" "\n" // q5 <- g'
-
-                "EE.VMIN.S8 q5, q5, q7" "\n"
-                "ST.QR q5, %[dst], 16" "\n" // g <- q5
-
-                "EE.VADDS.S8 q5, q0, q2" "\n" // q5 <- b'
-
-                "EE.VMIN.S8 q5, q5, q6" "\n"
-                "ST.QR q5, %[dst], 32" "\n" // b <- q5
+                "EE.VADDS.S8 q0, q1, q2" "\n"
                 
+                "LD.QR q1, %[src1], 16" "\n" // q1 <- g
+                "LD.QR q2, %[src2], 16" "\n" // q2 <- g
+
+                "EE.VMIN.S8 q0, q0, q6" "\n" // q0 <- r'
+                "ST.QR q0, %[dst], 0" "\n" // r <- q0
+
+                "EE.VADDS.S8 q0, q1, q2" "\n"
+
+                "LD.QR q1, %[src1], 32" "\n" // q1 <- b
+                "LD.QR q2, %[src2], 32" "\n" // q2 <- b
+
+                "EE.VMIN.S8 q0, q0, q7" "\n" // q0 <- g'
+                "ST.QR q0, %[dst], 16" "\n" // g <- q0
+
+                "EE.VADDS.S8 q0, q1, q2" "\n"
+                "EE.VMIN.S8 q0, q0, q6" "\n" // q0 <- b'
+
+                "ST.QR q0, %[dst], 32" "\n" // b <- q0
                 :
-                    "+m" (dep),
-                    "+m" (dst.rgb)
+                    "=m" (dst.rgb),
+                    "+m" (dep)
                 :
-                    "m" (src.rgb),
-                    [src] "r" (&src.rgb),
+                    "m" (src1.rgb),
+                    "m" (src2.rgb),
+                    [src1] "r" (&src1.rgb),
+                    [src2] "r" (&src2.rgb),
                     [dst] "r" (&dst.rgb)
             );
-
-
-            // using .[LD/ST].INCP saves 3 instructions but clobbers two registers; likely not worth it.
-
-            // const auto* s = &src.rgb;
-            // auto* d = &dst.rgb;
-            // 
-            // asm (
-            //     "EE.VLD.128.IP q0, %[src], 16" "\n" // q0 <- r
-            //     "EE.VLD.128.IP q1, %[src], 16" "\n" // q1 <- g
-
-            //     "LD.QR q2, %[dst], 0" "\n" // q2 <- r
-            //     "LD.QR q3, %[dst], 16" "\n" // q3 <- g
-
-            //     "EE.VADDS.S8.LD.INCP q0, %[src], q5, q0, q2" "\n" // q0 <- b, q5 <- r'
-
-            //     "LD.QR q2, %[dst], 32" "\n" // q2 <- b
-
-            //     "EE.VMIN.S8 q5, q5, q6" "\n"
-
-            //     // dst == 0
-            //     "EE.VADDS.S8.ST.INCP q5, %[dst], q5, q1, q3" "\n" // q5 <- g'
-
-            //     "EE.VMIN.S8 q5, q5, q7" "\n"
-
-            //     // dst == 16
-            //     "EE.VADDS.S8.ST.INCP q5, %[dst], q5, q0, q2" "\n" // q5 <- b'
-
-            //     "EE.VMIN.S8 q5, q5, q6" "\n"
-            //     // dst == 32
-            //     "ST.QR q5, %[dst], 0" "\n"
-                
-            //     :
-            //         "+m" (dep),
-            //         "+m" (dst.rgb),
-            //         [src] "+&r" (s),
-            //         [dst] "+&r" (d)
-            //     :
-            //         "m" (src.rgb)
-            // );
         }
 
         inline RGBVec& add(const RGBVec& src) {
-            add(*this,src);
+            add(*this,*this,src);
             return *this;
         }
 
@@ -502,7 +468,7 @@ namespace rgb565 {
         }
 
         inline RGBVec& add_clamp(const RGBVec& other) {
-            add_clamp(*this,other);
+            add_clamp(*this,*this,other);
             return *this;
         }
 
@@ -643,36 +609,23 @@ namespace rgb565 {
                 using Qtmp = simd::Q2;
 
                 if(known(((uintptr_t)src % 16) == 0)) {
-                    asm (
-                        "LD.QR q%[ql], %[src], 0" "\n"
-                        "LD.QR q%[qh], %[src], 16" "\n"
-                        :
-                            "+m" (dep)
-                        :
-                            [src] "r" (src),
-                            "m" (*(const uint16_t(*)[16])src),
-                            [ql] "n" (QL::N),
-                            [qh] "n" (QH::N)
-                    );
+                    simd::qtil::ldqr<QL,QH>(src,dep);
                 } else {
                     const uint16_t* s = src;
+                    simd::qtil::vldip_usar<QL,QH>(s,dep);
+                    simd::qtil::vldip<Qtmp,-32>(s,dep);
+                    [[assume(s == src)]];
                     asm (
-                        "EE.LD.128.USAR.IP q%[ql], %[s], 16" "\n"
-                        "EE.VLD.128.IP     q%[qh], %[s], 16" "\n"
-                        "EE.VLD.128.IP    q%[tmp], %[s], -32" "\n"
-
                         "EE.SRC.Q q%[ql], q%[ql], q%[qh]" "\n"
                         "EE.SRC.Q q%[qh], q%[qh], q%[tmp]" "\n"
                         :
-                            [s] "+r" (s),
                             "+m" (dep)
                         :
-                            "m" (*(const uint16_t(*)[16])src),
                             [ql] "n" (QL::N),
                             [qh] "n" (QH::N),
                             [tmp] "n" (Qtmp::N)
                     );
-                    [[assume(s == src)]];
+
                 }
 
                 from565<QL,QH>(dep);
@@ -707,44 +660,32 @@ namespace rgb565 {
                 simd::qtil::ldbc<Qkey,uint16_t>(keyColor, dep);
 
                 if(known(((uintptr_t)src % 16) == 0)) {
-                    asm (
-                        "LD.QR q%[ql], %[src], 0" "\n"
-                        "LD.QR q%[qh], %[src], 16" "\n"
-                        :
-                            "+m" (dep)
-                        :
-                            [src] "r" (src),
-                            "m" (*(const uint16_t(*)[16])src),
-                            [ql] "n" (QL::N),
-                            [qh] "n" (QH::N)
-                    );
+                    simd::qtil::ldqr<QL,QH>(src,dep);
                 } else {
                     const uint16_t* s = src;
-                    asm (
-                        "EE.LD.128.USAR.IP q%[ql], %[s], 16" "\n"
-                        "EE.VLD.128.IP     q%[qh], %[s], 16" "\n"
-                        "EE.VLD.128.IP    q%[tmp], %[s], -32" "\n"
+                    simd::qtil::vldip_usar<QL,QH>(s,dep);
+                    simd::qtil::vldip<Qtmp,-32>(s,dep);
+                    [[assume(s == src)]];
 
+                    asm (
                         "EE.SRC.Q q%[ql], q%[ql], q%[qh]" "\n"
                         "EE.SRC.Q q%[qh], q%[qh], q%[tmp]" "\n"
                         :
-                            [s] "+r" (s),
                             "+m" (dep)
                         :
-                            "m" (*(const uint16_t(*)[16])src),
                             [ql] "n" (QL::N),
                             [qh] "n" (QH::N),
                             [tmp] "n" (Qtmp::N)
                     );
-                    [[assume(s == src)]];
+
                 }
 
                 asm (
-                    "EE.VCMP.S16 q%[tmp], q%[ql], q%[key]" "\n"
+                    "EE.VCMP.EQ.S16 q%[tmp], q%[ql], q%[key]" "\n"
                     "EE.NOTQ q%[tmp], q%[tmp]" "\n"
                     "EE.ANDQ q%[ql], q%[ql], q%[tmp]" "\n"
 
-                    "EE.VCMP.S16 q%[tmp], q%[qh], q%[key]" "\n"
+                    "EE.VCMP.EQ.S16 q%[tmp], q%[qh], q%[key]" "\n"
                     "EE.NOTQ q%[tmp], q%[tmp]" "\n"
                     "EE.ANDQ q%[qh], q%[qh], q%[tmp]" "\n"
                     :
@@ -854,26 +795,37 @@ namespace rgb565 {
         RGBVec& clamp(void) {
             simd::qtil::Dep dep {};
 
-            loadMasks<simd::Q6,simd::Q7>(dep);
+            using M5 = simd::Q6;
+            using M6 = simd::Q7;
+
+            using R = simd::Q0;
+            using G = simd::Q1;
+            using B = simd::Q2;
+
+            loadMasks<M5,M6>(dep);
+
+            simd::qtil::ldqr<R,G,B>(&this->rgb,dep);
 
             asm (
-                "LD.QR q0, %[rgb], 0" "\n" // r
-                "LD.QR q1, %[rgb], 16" "\n" // g
-                "LD.QR q2, %[rgb], 32" "\n" // b
+                "EE.VMIN.S8 q%[r], q%[r], q%[m5]" "\n" // r
+                "ST.QR q%[r], %[rgb], 0" "\n"
 
-                "EE.VMIN.S8 q0, q0, q6" "\n" // r
-                "ST.QR q0, %[rgb], 0" "\n"
+                "EE.VMIN.S8 q%[g], q%[g], q%[m6]" "\n" // g
+                "ST.QR q%[g], %[rgb], 16" "\n"
 
-                "EE.VMIN.S8 q1, q1, q7" "\n" // g
-                "ST.QR q1, %[rgb], 16" "\n"
-
-                "EE.VMIN.S8 q2, q2, q6" "\n" // b
-                "ST.QR q2, %[rgb], 32" "\n"
+                "EE.VMIN.S8 q%[b], q%[b], q%[m5]" "\n" // b
+                "ST.QR q%[b], %[rgb], 32" "\n"
                 :
-                    "+m" (this->rgb),
+                    "=m" (this->rgb),
                     "+m" (dep)
                 :
-                    [rgb] "r" (&this->rgb)
+                    [rgb] "r" (&this->rgb),
+                    [r] "n" (R::N),
+                    [g] "n" (G::N),
+                    [b] "n" (B::N),
+                    [m5] "n" (M5::N),
+                    [m6] "n" (M6::N)
+
             );
 
             return *this;
@@ -881,10 +833,10 @@ namespace rgb565 {
 
         private:
 
-        static inline constexpr uint16_t MASK_5 = (1u << 5) - 1; // 0x1f;
-        static inline constexpr uint16_t MASK_6 = (1u << 6) - 1; // 0x31;
+        static inline constexpr uint16_t MASK_5 = (1u << 5) - 1; // 0x001f;
+        static inline constexpr uint16_t MASK_6 = (1u << 6) - 1; // 0x003f;
 
-        static inline constexpr uint16_t MASKS[2] = {MASK_5, MASK_6}; //, MASK_5};
+        static inline constexpr uint16_t MASKS[2] = {MASK_5, MASK_6};
 
 
 
